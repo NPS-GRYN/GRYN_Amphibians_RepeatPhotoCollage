@@ -1,0 +1,251 @@
+---
+title: "GRYN Wetland Repeat Photo Time Series"
+author: "Ben LaFrance; benjamin_lafrance@nps.gov"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+Last edited on 2025-02-03.
+
+This script automatically generates a tiled pdf for all repeat photo locations visited in a given catchment. 
+
+All images in all folders that you want to use must all be labeled with the following convention: Catchment-Site_pp_X_bearing_yyyymmdd.jpg
+An example file name would be: 4170-1_pp_a_080_20060627.jpg
+
+The original file names of repeat photo points on the GRYN server is inconsistent.
+Here is an example command to "bulk" change the photos in windows powershell.
+This will work in a given year and catchment to expedite the name standardization:
+
+PS C:\Users\blafrance\Desktop\Renaming_RepeatPhotos\Y544_GardnerHole\544_2006> Get-ChildItem -Filter "YELL544-*.jpg" | ForEach-Object {
+>>     $newName = $_.Name -replace 'YELL544', '544' -replace '_18Jul06', '_20060718' -replace 'pic', 'pp_a_' -replace '\.JPG$', '.jpg'
+>>     Rename-Item $_.FullName -NewName $newName
+>> }
+
+
+```{r LoadLibraries}
+# Load the necessary libraries
+library(magick)
+library(dplyr)
+library(grid)
+library(gridExtra)
+library(lubridate)
+```
+
+```{r IndentifyTheWorkingDirectory}
+# Set the base directory
+# Manually changed for each catchment you want to make a time series
+base_directory <- "RepeatPhotos_297_CacheLake/"
+
+
+output_directory <- paste0(base_directory, "/Site_Time_Series_Summaries")
+dir.create(output_directory, showWarnings = FALSE, recursive = TRUE)
+
+# List all subdirectories in the base directory
+subdirs <- list.dirs(base_directory, full.names = TRUE, recursive = FALSE)
+
+```
+This code snippet loops through all the subdirectories under the specified base directory and extracts the unique strings from the filenames, excluding the date portion. The results are stored in unique_search_strings, which you can use for further processing in your R script.
+
+```{r QueryUniquePhotoPoints}
+# List all subdirectories in the base directory
+subdirs <- list.dirs(base_directory, full.names = TRUE, recursive = FALSE)
+
+# Create a list to store the unique search strings for all subdirectories
+unique_search_strings <- c()
+
+# Loop through each subdirectory to extract unique strings
+for (subdir in subdirs) {
+  # List files in the subdirectory that match the pattern
+  target_filenames <- list.files(subdir, pattern = ".jpg", full.names = TRUE)
+  
+  # Extract the search string using regex
+  search_strings <- sub("^(.*?_.*?_.*?)_.*\\.jpg", "\\1", basename(target_filenames))
+  
+  # Combine with unique strings found so far
+  unique_search_strings <- unique(c(unique_search_strings, search_strings))
+}
+
+# Display the unique search strings
+unique_search_strings
+
+```
+
+
+```{r CalculateAverageAnnualPrecip}
+# This code block isn't necessarily important for this script, just used to help create a color gradient
+
+# In order to color code fill each of the boxes surrounding the photo point, we need to calculate the deviation from average historical precipitation
+# Downloaded historical gridmet data for YELL from Tercek found here:
+# https://parkfutures.s3.us-west-2.amazonaws.com/maca-tprh-data/index.html
+# Used the following code to estimate the annual precip for each water year
+# i.e. 1980 precip is from Oct 1, 1979 to Sept 30, 1980.
+
+# I did the following in excel because it was quick and not going to change:
+# For the numbers provided for color scaling below, 1980-2000 were averaged
+# then the year of interests precip was subtracted from that average.
+
+# Read the data
+historical_gridmet <- read.csv("YELL_historical.csv", header = TRUE)
+historical_gridmet
+
+# Convert Date column to Date format (make sure to replace 'Date' with the actual column name if it differs)
+historical_gridmet$Date <- as.Date(historical_gridmet$Date, format = "%Y-%m-%d")  # Adjust the format to match your data
+
+# Create a new column for Water Year (Oct 1 - Sept 30)
+historical_gridmet$WaterYear <- ifelse(month(historical_gridmet$Date) >= 10, 
+                                        year(historical_gridmet$Date) + 1, 
+                                        year(historical_gridmet$Date))
+
+# Calculate the sum of Precip..in. for each Water Year
+annual_precipitation <- historical_gridmet %>%
+  group_by(WaterYear) %>%
+  summarise(Total_Precip = sum(Precip..in., na.rm = TRUE)) %>%
+  filter(!is.na(WaterYear))  # Ensure we do not include years with NA values
+
+# Write the results to a CSV file
+write.csv(annual_precipitation, "annual_precipitation_by_water_year.csv", row.names = FALSE)
+
+
+```
+
+
+
+```{r ColorBoxByPrecipitation}
+# Define precipitation values for each year (relative to historical averages)
+precipitation_values <- c(
+  `2006` = -0.459317834,
+  `2007` = -6.07349111,
+  `2008` = 4.206036863,
+  `2009` = 2.355642912,
+  `2010` = -7.274278076,
+  `2011` = 6.50524903,
+  `2012` = -1.313648204,
+  `2013` = -3.301837342,
+  `2014` = 4.135170558,
+  `2015` = -6.305774341,
+  `2016` = -6.498687864,
+  `2017` = 14.23359589,
+  `2018` = 4.190288676,
+  `2019` = 1.430446419,
+  `2020` = -5.124672054,
+  `2021` = -6.282152314,
+  `2022` = 0.501312264,
+  `2023` = 2.883201976
+)
+
+
+# Define the color gradient using specific hex codes
+color_gradient <- colorRampPalette(c("#BB0103", "#DB7A7B", "#FFFEFE", "#8F88D2", "#1207A3"))
+
+# Generate colors for a specified range
+# The number of colors should match how many distinct values you want in the gradient.
+# For example, if you want to sample 100 colors:
+gradient_colors <- color_gradient(100)
+
+# Function to get colors based on precipitation values using the gradient
+get_color_based_on_precip <- function(value) {
+  # Bound the value to the range of -15 to +15 for normalization
+  value <- pmax(-15, pmin(15, value))
+  
+  # Normalize the value to a range of [0, 1]
+  normalized_value <- (value + 15) / 30  # Shifting to [0, 1]
+  return(gradient_colors[round(normalized_value * (length(gradient_colors) - 1)) + 1])
+}
+
+# Apply the function to get colors for each year
+colors <- sapply(precipitation_values, get_color_based_on_precip)
+
+# Print the output
+print(colors)
+
+```
+
+```{r CreateTiledPDF}
+# Create an empty list to store matching filenames for each search string
+matching_files_list <- list()
+
+# Create PDF collages for each target photo site
+for (search_string in unique_search_strings) {
+  matching_filenames <- character(0)  
+  
+  # Search for matching filenames in specified subdirectories
+  for (subdir in subdirs) {
+    sub_filenames <- list.files(subdir, pattern = ".jpg", full.names = TRUE)
+    matching_files <- sub_filenames[grep(search_string, sub_filenames, fixed = TRUE)]
+    matching_filenames <- c(matching_filenames, matching_files)
+  }
+  
+  # Sort files by date
+  matching_filenames <- matching_filenames[order(as.Date(sub(".*_(\\d{8})\\.jpg$", "\\1", matching_filenames), format = "%Y%m%d"))]
+
+  # Create the PDF file
+  pdf_file <- file.path(output_directory, paste0(search_string, "_collage.pdf"))
+  pdf(pdf_file, width = 11, height = 8.5)
+
+  # Set up grid layout
+  n_rows <- 4
+  n_cols <- 5
+  cell_width <- unit(2, "inches")
+  cell_height <- unit(1.7, "inches")
+  grid.newpage()
+  
+  # Loop through years 2006 to 2023
+  for (year in 2006:2023) {
+    # Search for images from the current year
+    year_search_string <- sprintf(".*_%d\\d{4}\\.jpg$", year)  
+    year_images <- matching_filenames[grep(year_search_string, matching_filenames)]
+
+    grid_index <- (year - 2006 + 1)
+    row_index <- ceiling(grid_index / n_cols)
+    col_index <- grid_index %% n_cols
+    if (col_index == 0) col_index <- n_cols  
+    x <- unit((col_index - 1) * 2 + 1.5, "inches")
+    y <- unit(8 - (row_index * 1.7) + 0.5, "inches")
+
+    # Get the precipitation for the year
+    precip <- precipitation_values[as.character(year)]
+  
+    # Draw the colored boxes based on precipitation
+    fill_color <- get_color_based_on_precip(precip)  # Use the updated function
+    rect <- rectGrob(x = x, y = y, width = cell_width, height = cell_height,
+                     gp = gpar(col = "black", fill = fill_color, lwd = 2))
+    grid.draw(rect)
+
+    # Handle image placement or placeholder text
+    if (length(year_images) > 0) {
+      img <- image_read(year_images[1])  
+      img <- image_scale(img, "400x300") 
+      grid.raster(as.raster(img), x = x, y = y + unit(-0.07, "inches"),
+                  width = cell_width / 1.05, height = cell_height / 1.15)
+
+      title <- sub(".jpg$", "", basename(year_images[1]))
+      grid.text(label = title, x = x, y = y + unit(0.75, "inches"), gp = gpar(fontsize = 7.5))
+    } else {
+      grid.text(label = "Repeat Photo Not Taken", x = x, y = y + unit(0.75, "inches"), gp = gpar(fontsize = 7.5, col = "red"))
+    }
+    
+    if (row_index == 1 && col_index == 1) {
+      grid.text(label = as.character(search_string), x = unit(0.05, "npc"), y = unit(0.95, "npc"), 
+                gp = gpar(fontsize = 12, fontface = "bold", col = "black"))  
+    }
+  }
+  
+  # Close the PDF after processing
+  dev.off()
+}
+
+
+```
+
+
+
+
+
+
+
+
+END of current script
+
+
+
+
